@@ -1,0 +1,6 @@
+---
+ansible_pullsh_playbooks: []
+ansible_pullsh_user: ansible-pull
+ansible_pullsh_ansible_version: 2.11.3
+ansible_pullsh_directory: "/opt/ansible-pull"
+ansible_pullsh_onfailure_unit: ""

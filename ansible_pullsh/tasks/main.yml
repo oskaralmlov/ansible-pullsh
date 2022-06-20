@@ -1,0 +1,127 @@
+---
+- tags: ansible_pullsh
+  become: true
+  become_user: root
+  module_defaults:
+    ansible.builtin.file: &default_permissions
+      owner: "{{ ansible_pullsh_user }}"
+      group: "{{ ansible_pullsh_user }}"
+      mode: 0400
+    ansible.builtin.copy: *default_permissions
+  vars:
+    _systemd_timer: "{{ ('ansible-pullsh-' + item.name) | mullvad.infrastructure.systemd_unit(type='timer') }}"
+    _systemd_service: "{{ ('ansible-pullsh-' + item.name) | mullvad.infrastructure.systemd_unit(type='service') }}"
+  block:
+
+    - name: Install python3-pip
+      ansible.builtin.apt:
+        name: python3-pip
+
+    - name: Install ansible-core {{ ansible_pullsh_ansible_version }}
+      ansible.builtin.pip:
+        name: ansible-core=={{ ansible_pullsh_ansible_version }}
+
+    - name: Create user {{ ansible_pullsh_user }}
+      ansible.builtin.user:
+        name: "{{ ansible_pullsh_user }}"
+        create_home: false
+        home: "{{ ansible_pullsh_directory }}"
+        shell: /usr/sbin/nologin
+        comment: Service user for running local ansible playbooks
+
+    - name: Create directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ ansible_pullsh_directory }}"
+        - "{{ ansible_pullsh_directory }}/playbooks"
+
+    - name: Transfer hostvars
+      ansible.builtin.copy:
+        content: "{{ hostvars[inventory_hostname] | to_nice_json }}"
+        dest: "{{ ansible_pullsh_directory }}/hostvars.json"
+
+    - name: Transfer playbook(s)
+      ansible.builtin.synchronize:
+        src: "{{ item.name }}"
+        dest: "{{ ansible_pullsh_directory }}/playbooks"
+      loop: "{{ __ansible_pullsh_playbooks_all }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Transfer task(s)
+      ansible.builtin.synchronize:
+        src: "{{ playbook_dir }}/tasks"
+        dest: "{{ ansible_pullsh_directory }}/playbooks"
+
+    - name: Transfer inventory
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../inventory"
+        dest: "{{ ansible_pullsh_directory }}/inventory"
+
+    - name: Transfer roles(s)
+      ansible.builtin.synchronize:
+        src: "{{ playbook_dir }}/../roles"
+        dest: "{{ ansible_pullsh_directory }}"
+
+    - name: Transfer libraries
+      ansible.builtin.synchronize:
+        src: "{{ playbook_dir }}/../library"
+        dest: "{{ ansible_pullsh_directory }}"
+
+    - name: Transfer collection(s)
+      ansible.builtin.synchronize:
+        src: "{{ playbook_dir }}/../collections"
+        dest: "{{ ansible_pullsh_directory }}"
+
+    - name: Create systemd services
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          {% if item.onfailure is defined and item.onfailure %}
+          OnFailure={{ ansible_pullsh_onfailure_unit }}
+          {% endif %}
+
+          [Service]
+          User={{ ansible_pullsh_user }}
+          Environment="ANSIBLE_LIBRARY={{ ansible_pullsh_directory }}/library"
+          Environment="ANSIBLE_ROLES_PATH={{ ansible_pullsh_directory }}/roles"
+          Environment="ANSIBLE_COLLECTIONS_PATH={{ ansible_pullsh_directory }}/collections"
+          ExecStart=!/usr/local/bin/ansible-playbook --limit {{ inventory_hostname }} --connection local --become --inventory {{ ansible_pullsh_directory }}/inventory {% if item.tags is defined %} --tags {{ item.tags | join(",") }}{% endif %}{% if item.skip_tags is defined %} --skip-tags {{ item.skip_tags | join(",") }}{% endif %} -e @{{ ansible_pullsh_directory }}/hostvars.json {{ ansible_pullsh_directory }}/playbooks/{{ item.name }}
+        dest: "{{ _systemd_service.file_path }}"
+        owner: root
+        group: root
+        mode: "{{ _systemd_service.file_permissions }}"
+      when: item.interval is defined
+      loop: "{{ __ansible_pullsh_playbooks_all }}"
+      loop_control:
+        label: "{{ _systemd_service.name }}"
+
+    - name: Create systemd timers
+      ansible.builtin.copy:
+        content: |
+          [Timer]
+          OnCalendar={{ item.interval }}
+
+          [Install]
+          WantedBy=timers.target
+        dest: "{{ _systemd_timer.file_path }}"
+        owner: root
+        group: root
+        mode: "{{ _systemd_timer.file_permissions }}"
+      when: item.interval is defined
+      loop: "{{ __ansible_pullsh_playbooks_all }}"
+      loop_control:
+        label: "{{ _systemd_timer.name }}"
+
+    - name: Start & enable systemd timers
+      ansible.builtin.systemd:
+        name: "{{ _systemd_timer.name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: item.interval is defined
+      loop: "{{ __ansible_pullsh_playbooks_all }}"
+      loop_control:
+        label: "{{ _systemd_timer.name }}"

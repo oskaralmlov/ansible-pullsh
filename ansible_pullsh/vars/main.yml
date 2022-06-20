@@ -1,0 +1,4 @@
+---
+__ansible_pullsh_playbooks_mandatory: []
+
+__ansible_pullsh_playbooks_all: "{{ __ansible_pullsh_playbooks_mandatory + ansible_pullsh_playbooks }}"
